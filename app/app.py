@@ -11,7 +11,6 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.retrievers.document_compressors import LLMChainExtractor
 from langchain.retrievers import ContextualCompressionRetriever
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import WebBaseLoader
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_mistralai import MistralAIEmbeddings
@@ -19,11 +18,17 @@ from langchain_mistralai.chat_models import ChatMistralAI
 
 import chainlit as cl
 
+from document_loader import load_documents
+
 # Configuration
 URLS = [
     "https://www.investopedia.com/water-etfs-how-they-work-8426968",
     "https://www.investopedia.com/precious-metals-etfs-8549823",
     "https://www.investopedia.com/treasury-exchange-traded-funds-8536147",
+]
+
+FILE_PATHS = [
+    "./data/ih2o-ishares-global-water-ucits-etf-fund-fact-sheet-en-ch.pdf",
 ]
 
 PROMPT_TEMPLATE = """Answer the following question based only on the provided context:
@@ -34,6 +39,9 @@ PROMPT_TEMPLATE = """Answer the following question based only on the provided co
 
 Question: {input}"""
 
+FAISS_INDEX_PATH = "./faiss_index"
+
+
 class RAGPipeline:
     def __init__(self):
         # Disable warnings
@@ -43,6 +51,10 @@ class RAGPipeline:
         load_dotenv()
         self.mistral_api_key = os.getenv("MISTRAL_API_KEY")
         self.huggingface_token = os.getenv("HUGGINGFACE_TOKEN")
+        
+        # Determine initialization mode (True = build new DB, False = load existing)
+        init_db_env = os.getenv("INIT_DB", "True").lower()
+        self.initialize_db = True if init_db_env == "true" else False
         
         # Initialize core components
         self._init_models()
@@ -68,11 +80,10 @@ class RAGPipeline:
         """Calculate token length of text."""
         return len(self.tokenizer.encode(text))
 
-    def _split_documents(self, urls: List[str]) -> List[Any]:
+    def _load_split_documents(self, file_paths: List[str], urls: List[str]) -> List[Any]:
         """Load and split documents into chunks."""
         # Load documents
-        docs = [WebBaseLoader(url).load() for url in urls]
-        docs_list = [item for sublist in docs for item in sublist]
+        docs_list = load_documents(file_paths, urls)
 
         # Split documents
         splitter = RecursiveCharacterTextSplitter(
@@ -84,15 +95,21 @@ class RAGPipeline:
 
         return splitter.split_documents(docs_list)
 
-    def create_retrieval_chain(self, urls: List[str]) -> Any:
+    def create_retrieval_chain(self, file_paths: List[str], urls: List[str]) -> Any:
         """Create the full RAG retrieval chain."""
-        # Process documents
-        chunked_docs = self._split_documents(urls)
-        
-        # Create vector store and retriever
-        vector_store = FAISS.from_documents(chunked_docs, self.embeddings)
+        # If we are not initializing a new DB and the FAISS index directory exists, we can load it
+        if not self.initialize_db and os.path.exists(FAISS_INDEX_PATH):
+            vector_store = FAISS.load_local(FAISS_INDEX_PATH, self.embeddings, allow_dangerous_deserialization=True)
+        else:
+            # Process documents and create a new vector store
+            chunked_docs = self._load_split_documents(file_paths, urls)
+            
+            vector_store = FAISS.from_documents(chunked_docs, self.embeddings)
+            # Save the vector store for future reuse
+            vector_store.save_local(FAISS_INDEX_PATH)
+
         base_retriever = vector_store.as_retriever(
-            search_kwargs={"k": 3, "fetch_k": 10}
+            search_kwargs={"k": 25}
         )
         
         # Create compression retriever
@@ -101,7 +118,7 @@ class RAGPipeline:
             base_compressor=compressor,
             base_retriever=base_retriever,
         )
-
+    
         # Create chain
         prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
         document_chain = create_stuff_documents_chain(self.llm, prompt)
@@ -114,7 +131,7 @@ rag_pipeline = RAGPipeline()
 @cl.on_chat_start
 async def start():
     """Initialize chat session."""
-    retrieval_chain = rag_pipeline.create_retrieval_chain(URLS)
+    retrieval_chain = rag_pipeline.create_retrieval_chain(FILE_PATHS, URLS)
     cl.user_session.set("retrieval_chain", retrieval_chain)
     await cl.Message(content="Welcome! Ask me anything about ETFs!").send()
 

@@ -1,0 +1,14 @@
+python-dotenv
+huggingface-hub
+transformers
+langchain
+langchain-community
+langchain-core
+langchain-mistralai
+faiss-cpu
+chainlit
+torch
+sentence-transformers
+unstructured
+pdf2image
+pytesseract 
