@@ -11,6 +11,9 @@ from langchain_mistralai.chat_models import ChatMistralAI
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.retrievers import BM25Retriever, EnsembleRetriever
+import csv
+from datetime import datetime
+from pathlib import Path
 
 # Test different chunking methods and retrieval methods
 # Load environment variables
@@ -18,9 +21,16 @@ load_dotenv()
 HUGGINGFACE_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
-# File paths
+
 FILE_PATHS = [
     "../data/ih2o-ishares-global-water-ucits-etf-fund-fact-sheet-en-ch.pdf",
+]
+
+
+URLS = [
+    "https://www.investopedia.com/water-etfs-how-they-work-8426968",
+    "https://www.investopedia.com/precious-metals-etfs-8549823",
+    "https://www.investopedia.com/treasury-exchange-traded-funds-8536147",
 ]
 
 # Initialize models
@@ -79,10 +89,45 @@ def get_retrievers(chunks):
         "hybrid": hybrid_retriever
     }
 
+RESULTS_DIR = Path("./test_results")
+RESULTS_FILE = RESULTS_DIR / "retrieval_comparison.csv"
+
+def init_results_file():
+    """Initialize results CSV file if it doesn't exist."""
+    if not RESULTS_FILE.exists():
+        with open(RESULTS_FILE, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'timestamp',
+                'query',
+                'chunk_type',
+                'retriever_type',
+                'response',
+                'num_docs_retrieved',
+                'processing_time_ms'
+            ])
+
+def log_result(query: str, chunk_type: str, retriever_type: str, 
+               response: str, num_docs: int, time_ms: float):
+    """Log a single retrieval result to CSV."""
+    with open(RESULTS_FILE, 'a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            datetime.now().isoformat(),
+            query,
+            chunk_type,
+            retriever_type,
+            response,
+            num_docs,
+            time_ms
+        ])
+
 def compare_chunks_and_generate(query: str):
     """Compare different chunking and retrieval methods."""
+    init_results_file()
+    
     # Load documents
-    docs = load_documents(file_paths=FILE_PATHS)
+    docs = load_documents(file_paths=FILE_PATHS, urls=URLS)
     
     # Get chunks using both methods
     regular_chunks = get_chunks(docs, "regular")
@@ -112,7 +157,9 @@ def compare_chunks_and_generate(query: str):
         print("-" * 80)
         
         for retriever_type, retriever in retrievers.items():
-            # Get relevant documents silently
+            start_time = datetime.now()
+            
+            # Get relevant documents
             relevant_docs = retriever.get_relevant_documents(query)
             
             # Generate answer
@@ -121,11 +168,22 @@ def compare_chunks_and_generate(query: str):
                 "context": relevant_docs
             })
             
+            # Calculate processing time
+            time_ms = (datetime.now() - start_time).total_seconds() * 1000
+            
+            # Log results
+            log_result(
+                query=query,
+                chunk_type=chunk_type,
+                retriever_type=retriever_type,
+                response=response,
+                num_docs=len(relevant_docs),
+                time_ms=time_ms
+            )
+            
             print(f"\n{retriever_type.upper()} Search Answer:")
             print("-" * 40)
             print(response)
-            
-        print("-" * 80)
 
 if __name__ == "__main__":
     test_queries = [

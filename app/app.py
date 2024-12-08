@@ -8,9 +8,7 @@ from transformers import AutoTokenizer
 
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.retrievers.document_compressors import LLMChainExtractor
-from langchain.retrievers import ContextualCompressionRetriever
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_experimental.text_splitter import SemanticChunker
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_mistralai import MistralAIEmbeddings
@@ -20,7 +18,6 @@ import chainlit as cl
 
 from document_loader import load_documents
 
-# Configuration
 URLS = [
     "https://www.investopedia.com/water-etfs-how-they-work-8426968",
     "https://www.investopedia.com/precious-metals-etfs-8549823",
@@ -28,7 +25,7 @@ URLS = [
 ]
 
 FILE_PATHS = [
-    "./data/ih2o-ishares-global-water-ucits-etf-fund-fact-sheet-en-ch.pdf",
+    "../data/ih2o-ishares-global-water-ucits-etf-fund-fact-sheet-en-ch.pdf",
 ]
 
 PROMPT_TEMPLATE = """Answer the following question based only on the provided context:
@@ -85,45 +82,35 @@ class RAGPipeline:
         # Load documents
         docs_list = load_documents(file_paths, urls)
 
-        # Split documents
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=512,
-            chunk_overlap=50,
-            length_function=self._token_length,
-            is_separator_regex=False,
+        splitter = SemanticChunker(
+            embeddings=self.embeddings,
         )
+
 
         return splitter.split_documents(docs_list)
 
     def create_retrieval_chain(self, file_paths: List[str], urls: List[str]) -> Any:
-        """Create the full RAG retrieval chain."""
-        # If we are not initializing a new DB and the FAISS index directory exists, we can load it
+        """Create the full RAG retrieval chain with hybrid search."""
+        # Load vector store from cache if possible
         if not self.initialize_db and os.path.exists(FAISS_INDEX_PATH):
             vector_store = FAISS.load_local(FAISS_INDEX_PATH, self.embeddings, allow_dangerous_deserialization=True)
         else:
             # Process documents and create a new vector store
             chunked_docs = self._load_split_documents(file_paths, urls)
-            
             vector_store = FAISS.from_documents(chunked_docs, self.embeddings)
             # Save the vector store for future reuse
             vector_store.save_local(FAISS_INDEX_PATH)
 
-        base_retriever = vector_store.as_retriever(
-            search_kwargs={"k": 25}
-        )
-        
-        # Create compression retriever
-        compressor = LLMChainExtractor.from_llm(self.llm)
-        retriever = ContextualCompressionRetriever(
-            base_compressor=compressor,
-            base_retriever=base_retriever,
+        # Create vector retriever from FAISS
+        vector_retriever = vector_store.as_retriever(
+            search_kwargs={"k": 10}
         )
     
         # Create chain
         prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
         document_chain = create_stuff_documents_chain(self.llm, prompt)
         
-        return create_retrieval_chain(retriever, document_chain)
+        return create_retrieval_chain(vector_retriever, document_chain)
 
 # Initialize RAG pipeline
 rag_pipeline = RAGPipeline()
@@ -134,7 +121,6 @@ async def start():
     retrieval_chain = rag_pipeline.create_retrieval_chain(FILE_PATHS, URLS)
     cl.user_session.set("retrieval_chain", retrieval_chain)
     await cl.Message(content="Welcome! Ask me anything about ETFs!").send()
-
 @cl.on_message
 async def main(message: cl.Message):
     """Handle user messages."""

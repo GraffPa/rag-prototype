@@ -8,3 +8,4 @@ __pycache__/
 chainlit.md
 .chainlit
 faiss_index/
+test_results/
